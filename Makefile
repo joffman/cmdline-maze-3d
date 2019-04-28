@@ -2,8 +2,8 @@
 
 # variables
 CC = gcc
-CFLAGS = -Wall -ansi -c -g
-LDFLAGS = 
+CFLAGS = -Wall -std=c99 -c -g
+LDFLAGS = -lncurses -lm
 
 # target: dependencies
 # 	actions
@@ -11,7 +11,7 @@ LDFLAGS =
 all: main
 
 main: main.o
-	$(CC) $(LDFLAGS) main.o -o main
+	$(CC) main.o $(LDFLAGS) -o main
 
 main.o: main.c
 	$(CC) $(CFLAGS) main.c
