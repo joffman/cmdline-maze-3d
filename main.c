@@ -52,17 +52,17 @@ int main()
 		"################"
 		"#..............#"
 		"#..............#"
-		"#...##.........#"
+		"#.........######"
 		"#..............#"
+		"#.......##.....#"
+		"#.......##.....#"
+		"###............#"
+		"##.............#"
+		"#.......###..###"
+		"#.......#......#"
+		"#.......#......#"
 		"#..............#"
-		"#..............#"
-		"#..............#"
-		"#..............#"
-		"#..............#"
-		"#..............#"
-		"#..............#"
-		"#......#########"
-		"#..............#"
+		"#.......########"
 		"#..............#"
 		"################";
 
@@ -157,7 +157,7 @@ int main()
 					qsort(block_edges, sizeof(block_edges) / sizeof(block_edges[0]),
 							sizeof(block_edges[0]), compare_edges);
 					int i;
-					const double cos_threshold = 0.99999;
+					const double cos_threshold = 0.999985;
 					for (i = 0; i < 2; ++i) {	/* look at the two closest edges */
 						float vx = (block_edges[i].x - player_xpos) / block_edges[i].distance;
 						float vy = (block_edges[i].y - player_ypos) / block_edges[i].distance;
@@ -191,7 +191,7 @@ int main()
 			else
 				shade = " ";
 
-			/* Draw. */
+			/* Draw the 3D view. */
 			int row;
 			for (row = 0; row < SCREEN_HEIGHT; ++row) {
 				move(row, col);
@@ -222,6 +222,24 @@ int main()
 				}
 			}
 		}
+
+		/* Draw the stats. */
+		move(0, 0);
+		printw("X:%3.2f, Y:%3.2f, A:%3.2f, FPS:%3.2f ", player_xpos, player_ypos, player_alpha, 1000000000. / elapsed_nsec);
+
+		/* Draw the map. */
+		const int map_offset = 1;
+		int i;
+		for (i = 0; i < MAP_HEIGHT; ++i) {
+			move(map_offset + i, 0);
+			int j;
+			for (j = 0; j < MAP_WIDTH; ++j)
+				addch(map[i * MAP_WIDTH + j]);
+		}
+		/* Add the player. */
+		move(map_offset + player_ypos, player_xpos);
+		addch('P');
+
 		refresh();
 	}
 
