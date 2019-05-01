@@ -3,6 +3,7 @@
 #include <math.h>
 #include <time.h>
 #include <locale.h>
+#include <stdlib.h>	/* qsort */
 #include <ncurses.h>
 
 #define SCREEN_WIDTH 132
@@ -17,6 +18,18 @@
 #define FOV (PI / 4)
 
 
+struct edge {
+	int x;
+	int y;
+	double distance;	/* distance to player */
+};
+
+int compare_edges(const void *p1, const void *p2)
+{
+	const struct edge *e1 = p1;
+	const struct edge *e2 = p2;
+	return e1->distance > e2->distance;	/* edges with smaller distance should have smaller index */
+}
 
 int main()
 {
@@ -105,9 +118,11 @@ int main()
 
 			/* Distance to wall for that angle. */
 			double distance_to_wall = 0.;
+			const double step_size = 0.1;
 			int wall_reached = 0;
+			int is_boundary = 0;
 			while (!wall_reached && distance_to_wall < MAX_DISTANCE) {
-				distance_to_wall += 0.1;
+				distance_to_wall += step_size;
 				int test_x = (int) (player_xpos + eye_x * distance_to_wall);
 				int test_y = (int) (player_ypos + eye_y * distance_to_wall);
 
@@ -116,6 +131,45 @@ int main()
 					wall_reached = 1;
 				} else if (map[test_y * MAP_WIDTH + test_x] == '#') {
 					wall_reached = 1;
+
+					/* Check if we hit the boundary of the wall.
+					 * For that we will look at the 2 closest edges of the block,
+					 * because we can allways see at least two edges of a block.
+					 * If the angle between the current ray (given by eye_x and eye_y)
+					 * and the ray to one of the two edges is below a fixed threshold,
+					 * the current is approximately pointing at an edge.
+					 */
+					int dx, dy;
+					struct edge block_edges[4];
+					for (dx = 0; dx < 2; ++dx) {
+						for (dy = 0; dy < 2; ++dy) {
+							/* Add each edge to block_edges. */
+							struct edge e;
+							e.x = test_x + dx;
+							e.y = test_y + dy;
+							e.distance = sqrt((e.x - player_xpos) * (e.x - player_xpos)
+								+ (e.y - player_ypos) * (e.y - player_ypos));
+							block_edges[dx*2 + dy] = e;
+						}
+					}
+
+					/* Check if the current ray hits them hits one of the two closest edges. */
+					qsort(block_edges, sizeof(block_edges) / sizeof(block_edges[0]),
+							sizeof(block_edges[0]), compare_edges);
+					int i;
+					const double cos_threshold = 0.99999;
+					for (i = 0; i < 2; ++i) {	/* look at the two closest edges */
+						float vx = (block_edges[i].x - player_xpos) / block_edges[i].distance;
+						float vy = (block_edges[i].y - player_ypos) / block_edges[i].distance;
+						/* The dot product of two unit vectors equals the cosine between them.
+						 * Big cosine (close to 1) means small angle between the two vectors.
+						 */
+						double cosine = vx * eye_x + vy * eye_y;
+						if (cosine > cos_threshold) {
+							is_boundary = 1;
+							break;
+						}
+					}
 				}
 			}
 
@@ -141,11 +195,14 @@ int main()
 			int row;
 			for (row = 0; row < SCREEN_HEIGHT; ++row) {
 				move(row, col);
-				if (row < ceiling)
+				if (row < ceiling) {
 					addch(' ');
-				else if (row >= ceiling && row <= floor)
-					printw("%s", shade);
-				else {	/* Shade floor based on distance. */
+				} else if (row >= ceiling && row <= floor) {	/* drawing the wall */
+					if (is_boundary)
+						addch(' ');
+					else 
+						printw("%s", shade);
+				} else {	/* Shade floor based on distance. */
 					float half_screen_height = SCREEN_HEIGHT / 2.;
 					float dr = 1. - (row - half_screen_height) / half_screen_height; /* distance-ratio */
 
