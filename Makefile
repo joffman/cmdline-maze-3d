@@ -13,7 +13,7 @@ all: main
 main: main.o
 	$(CC) main.o $(LDFLAGS) -o main
 
-main.o: main.c
+main.o: main.c edge.h
 	$(CC) $(CFLAGS) main.c
 
 

@@ -1,10 +1,14 @@
 #define _POSIX_C_SOURCE 199309L	/* timespec, clock_gettime */
 
+#include <locale.h>	/* setlocale */
 #include <math.h>
-#include <time.h>
-#include <locale.h>
 #include <stdlib.h>	/* qsort */
+#include <string.h>
+#include <time.h>
+
 #include <ncurses.h>
+
+#include "edge.h"
 
 #define SCREEN_WIDTH 132
 #define SCREEN_HEIGHT 43
@@ -18,56 +22,292 @@
 #define FOV (PI / 4)
 
 
-struct edge {
-	int x;
-	int y;
-	double distance;	/* distance to player */
+/********************************************************************************
+ * Structs and typedefs.
+ ********************************************************************************/
+struct player {
+	double x;
+	double y;
+	double alpha;
 };
 
-int compare_edges(const void *p1, const void *p2)
+struct vec2d {
+	double x;
+	double y;
+};
+
+struct coordinates {
+	int x;
+	int y;
+};
+
+
+/********************************************************************************
+ * Static variables.
+ ********************************************************************************/
+static const char map[] =
+	"################"
+	"#..............#"
+	"#..............#"
+	"#.........######"
+	"#..............#"
+	"#.......##.....#"
+	"#.......##.....#"
+	"###............#"
+	"##.............#"
+	"#.......###..###"
+	"#.......#......#"
+	"#.......#......#"
+	"#..............#"
+	"#.......########"
+	"#..............#"
+	"################";
+
+
+/********************************************************************************
+ * Free functions.
+ ********************************************************************************/
+double dot_product(struct vec2d v1, struct vec2d v2)
 {
-	const struct edge *e1 = p1;
-	const struct edge *e2 = p2;
-	return e1->distance > e2->distance;	/* edges with smaller distance should have smaller index */
+	return v1.x * v2.x + v1.y * v2.y;
 }
 
-int main()
+void init_ncurses(void)
 {
-	setlocale(LC_ALL, "");
-
-	/* Init ncurses. */
 	initscr();
 	cbreak();
 	noecho();
 	keypad(stdscr, 1);
 	notimeout(stdscr, 1);
+}
 
-	/* Init player pose. */
-	double player_xpos = 5.;
-	double player_ypos = 5.;
-	double player_alpha = 0.;
+void move_player(struct player *player, long elapsed_nsec)
+{
+	struct vec2d player_unit_vec;
+	player_unit_vec.x = sin(player->alpha);
+	player_unit_vec.y = cos(player->alpha);
 
-	/* Initialize the map. */
-	char map[] =
-		"################"
-		"#..............#"
-		"#..............#"
-		"#.........######"
-		"#..............#"
-		"#.......##.....#"
-		"#.......##.....#"
-		"###............#"
-		"##.............#"
-		"#.......###..###"
-		"#.......#......#"
-		"#.......#......#"
-		"#..............#"
-		"#.......########"
-		"#..............#"
-		"################";
+	int cmd = getch();
+	struct player old_player = *player;
+	const double movement_incr_factor = 0.0000001;
+	switch (cmd) {
+		case 'w':	/* forward */
+			player->x += elapsed_nsec * movement_incr_factor * player_unit_vec.x;
+			player->y += elapsed_nsec * movement_incr_factor * player_unit_vec.y;
+			break;
+		case 's':	/* backward */
+			player->x -= elapsed_nsec * movement_incr_factor * player_unit_vec.x;
+			player->y -= elapsed_nsec * movement_incr_factor * player_unit_vec.y;
+			break;
+		case 'a':	/* left */
+			player->alpha += elapsed_nsec * movement_incr_factor;
+			break;
+		case 'd':	/* right */
+			player->alpha -= elapsed_nsec * movement_incr_factor;
+			break;
+	}
 
+	/* Collision detection. */
+	if (map[(int) player->y * MAP_WIDTH + (int) player->x] == '#') {
+		player->x = old_player.x;
+		player->y = old_player.y;
+	}
+}
 
-	/* Get ready for loop. */
+/*
+ * Compute coordinates of the block that is hit by the given ray.
+ */
+double compute_block_distance(struct player player, struct vec2d ray_unit_vec) {
+	double block_distance = 0.;
+	const double step_size = 0.1;
+
+	int block_reached = 0;
+	while (!block_reached && block_distance < MAX_DISTANCE) {
+		block_distance += step_size;
+		int x = player.x + ray_unit_vec.x * block_distance;
+		int y = player.y + ray_unit_vec.y * block_distance;
+
+		if (x < 0 || x > MAP_WIDTH
+				|| y < 0 || y > MAP_HEIGHT
+				|| map[y * MAP_WIDTH + x] == '#')
+			block_reached = 1;
+	}
+
+	return block_distance;
+}
+
+void compute_block_edges(struct edge edges[4], struct coordinates block_coords,
+	   	struct player player)
+{
+	int dx, dy;
+	for (dx = 0; dx < 2; ++dx) {
+		for (dy = 0; dy < 2; ++dy) {
+			struct edge e;
+			e.x = block_coords.x + dx;
+			e.y = block_coords.y + dy;
+			e.distance = sqrt((e.x - player.x) * (e.x - player.x)
+					+ (e.y - player.y) * (e.y - player.y));
+			edges[dx*2 + dy] = e;
+		}
+	}
+}
+
+/* Check if we hit the boundary of the given block.
+ * For that we will look at the 2 closest edges of the block,
+ * because we can allways see at least two edges of a block.
+ * If the angle between the current ray (given by ray_unit_vec)
+ * and the ray to one of the two edges is below a fixed threshold,
+ * the ray is approximately pointing at an edge.
+ */
+int check_ray_hits_edge(struct player player, struct vec2d ray_unit_vec,
+		struct coordinates block_coords)
+{
+	struct edge block_edges[4];
+	compute_block_edges(block_edges, block_coords, player);
+
+	/* Sort the edges, because we only want to look at the two closest. */
+	qsort(block_edges, sizeof(block_edges) / sizeof(block_edges[0]),
+			sizeof(block_edges[0]), compare_edges);
+	int i;
+	const double cos_threshold = 0.999985;
+	for (i = 0; i < 2; ++i) {
+		struct vec2d edge_unit_vec;
+		edge_unit_vec.x = (block_edges[i].x - player.x) / block_edges[i].distance;
+		edge_unit_vec.y = (block_edges[i].y - player.y) / block_edges[i].distance;
+
+		/* The dot product of two unit vectors equals the cosine between them.
+		 * Big cosine (close to 1) means small angle between the two vectors.
+		 */
+		double cosine = dot_product(ray_unit_vec, edge_unit_vec);
+		if (cosine > cos_threshold)
+			return 1;
+	}
+
+	return 0;
+}
+
+void compute_block_shade(char *block_shade, int size, double block_distance)
+{	
+	if (block_distance < MAX_DISTANCE / 4.)
+		strncpy(block_shade, "\u2588", size);
+	else if (block_distance < MAX_DISTANCE / 3.)
+		strncpy(block_shade, "\u2593", size);
+	else if (block_distance < MAX_DISTANCE / 2.)
+		strncpy(block_shade, "\u2592", size);
+	else if (block_distance < MAX_DISTANCE)
+		strncpy(block_shade, "\u2591", size);
+	else
+		strncpy(block_shade, " ", size);
+}
+
+char compute_floor_shade(int row)
+{
+	/* Compute distance-ratio. */
+	float half_screen_height = SCREEN_HEIGHT / 2.;
+	float dr = 1. - (row - half_screen_height) / half_screen_height;
+
+	/* Determine floor-shade. */
+	char fshade;
+	if (dr < 0.15)
+		fshade = '#';
+	else if (dr < 0.3)
+		fshade = 'x';
+	else if (dr < 0.6)
+		fshade = '.';
+	else if (dr < 0.9)
+		fshade = '-';
+	else
+		fshade = ' ';
+	return fshade;
+}
+
+void draw_3d_view(struct player player)
+{
+	int col;
+	for (col = 0; col < SCREEN_WIDTH; ++col) {	/* for every ray */
+		/* Compute ray unit vector. */
+		double ray_angle = (player.alpha + FOV / 2.0)
+			- (col * FOV / SCREEN_WIDTH);
+		struct vec2d ray_unit_vec;
+		ray_unit_vec.x = sin(ray_angle);
+		ray_unit_vec.y = cos(ray_angle);
+
+		/* Compute distance and coordinates of the block that is hit by this ray. */
+		double block_distance =
+			compute_block_distance(player, ray_unit_vec);
+		struct coordinates block_coords;
+		block_coords.x = (int) (player.x + ray_unit_vec.x * block_distance);
+		block_coords.y = (int) (player.y + ray_unit_vec.y * block_distance);
+
+		int ray_hits_edge =
+			check_ray_hits_edge(player, ray_unit_vec, block_coords);
+
+		/* Calculate beginning of ceiling and floor. */
+		int ceiling = SCREEN_HEIGHT / 2.0
+			- SCREEN_HEIGHT / block_distance;
+		int floor = SCREEN_HEIGHT - ceiling;
+
+		/* Determine block-shade. */
+		char block_shade[10];
+		compute_block_shade(block_shade, 10, block_distance);
+
+		/* Draw the 3D view. */
+		int row;
+		for (row = 0; row < SCREEN_HEIGHT; ++row) {
+			move(row, col);
+			if (row < ceiling) {
+				addch(' ');
+			} else if (row >= ceiling && row <= floor) {	/* drawing the wall */
+				if (ray_hits_edge)
+					addch(' ');
+				else 
+					printw("%s", block_shade);
+			} else {	/* Shade floor based on distance. */
+				addch(compute_floor_shade(row));
+			}
+		}
+	}
+}
+
+void draw_stats(struct player player, long elapsed_nsec)
+{
+		/* Draw the stats. */
+		move(0, 0);
+		printw("X:%3.2f, Y:%3.2f, A:%3.2f, FPS:%3.2f ",
+				player.x, player.y, player.alpha,
+				1000000000. / elapsed_nsec);
+}
+
+void draw_map(struct player player)
+{
+	/* Draw the map. */
+	const int map_offset = 1;
+	int row;
+	for (row = 0; row < MAP_HEIGHT; ++row) {
+		move(map_offset + row, 0);
+		int col;
+		for (col = 0; col < MAP_WIDTH; ++col)
+			addch(map[row * MAP_WIDTH + col]);
+	}
+	/* Add the player. */
+	move(map_offset + player.y, player.x);
+	addch('P');
+}
+
+/********************************************************************************
+ * main.
+ ********************************************************************************/
+int main()
+{
+	/* Initialization. */
+	setlocale(LC_ALL, "");	/* XXX this has to come first */
+	init_ncurses();
+
+	struct player player;
+	player.x = 5.;
+	player.y = 5.;
+	player.alpha = 0.;
+
 	struct timespec oldtime, newtime;
 	clock_gettime(CLOCK_REALTIME, &oldtime); 
 
@@ -79,167 +319,13 @@ int main()
 			+ (newtime.tv_nsec - oldtime.tv_nsec);
 		oldtime = newtime;
 
-		/* Handle controls. */
-		double player_eye_x = sin(player_alpha);
-		double player_eye_y = cos(player_alpha);
-		int cmd = getch();
-		float old_px = player_xpos;
-		float old_py = player_ypos;
-		switch (cmd) {
-			case 'w':	/* forward */
-				player_xpos += elapsed_nsec * 0.0000001 * player_eye_x;
-				player_ypos += elapsed_nsec * 0.0000001 * player_eye_y;
-				break;
-			case 's':	/* backward */
-				player_xpos -= elapsed_nsec * 0.0000001 * player_eye_x;
-				player_ypos -= elapsed_nsec * 0.0000001 * player_eye_y;
-				break;
-			case 'a':	/* left */
-				player_alpha += elapsed_nsec * 0.0000001;
-				break;
-			case 'd':	/* right */
-				player_alpha -= elapsed_nsec * 0.0000001;
-				break;
-		}
-		/* Collision detection. */
-		if (map[(int) player_ypos * MAP_WIDTH + (int) player_xpos] == '#') {
-			player_xpos = old_px;
-			player_ypos = old_py;
-		}
+		/* Move the player. */
+		move_player(&player, elapsed_nsec);
 
-		/* Handle drawing. */
-		int col;
-		for (col = 0; col < SCREEN_WIDTH; ++col) {
-			/* Compute geometry of ray. */
-			double ray_angle = (player_alpha + FOV / 2.0)
-				- (col * FOV / SCREEN_WIDTH);
-			double eye_x = sin(ray_angle);
-			double eye_y = cos(ray_angle);
-
-			/* Distance to wall for that angle. */
-			double distance_to_wall = 0.;
-			const double step_size = 0.1;
-			int wall_reached = 0;
-			int is_boundary = 0;
-			while (!wall_reached && distance_to_wall < MAX_DISTANCE) {
-				distance_to_wall += step_size;
-				int test_x = (int) (player_xpos + eye_x * distance_to_wall);
-				int test_y = (int) (player_ypos + eye_y * distance_to_wall);
-
-				if (test_x < 0 || test_x > MAP_WIDTH
-						|| test_y < 0 || test_y > MAP_HEIGHT) {
-					wall_reached = 1;
-				} else if (map[test_y * MAP_WIDTH + test_x] == '#') {
-					wall_reached = 1;
-
-					/* Check if we hit the boundary of the wall.
-					 * For that we will look at the 2 closest edges of the block,
-					 * because we can allways see at least two edges of a block.
-					 * If the angle between the current ray (given by eye_x and eye_y)
-					 * and the ray to one of the two edges is below a fixed threshold,
-					 * the current is approximately pointing at an edge.
-					 */
-					int dx, dy;
-					struct edge block_edges[4];
-					for (dx = 0; dx < 2; ++dx) {
-						for (dy = 0; dy < 2; ++dy) {
-							/* Add each edge to block_edges. */
-							struct edge e;
-							e.x = test_x + dx;
-							e.y = test_y + dy;
-							e.distance = sqrt((e.x - player_xpos) * (e.x - player_xpos)
-								+ (e.y - player_ypos) * (e.y - player_ypos));
-							block_edges[dx*2 + dy] = e;
-						}
-					}
-
-					/* Check if the current ray hits them hits one of the two closest edges. */
-					qsort(block_edges, sizeof(block_edges) / sizeof(block_edges[0]),
-							sizeof(block_edges[0]), compare_edges);
-					int i;
-					const double cos_threshold = 0.999985;
-					for (i = 0; i < 2; ++i) {	/* look at the two closest edges */
-						float vx = (block_edges[i].x - player_xpos) / block_edges[i].distance;
-						float vy = (block_edges[i].y - player_ypos) / block_edges[i].distance;
-						/* The dot product of two unit vectors equals the cosine between them.
-						 * Big cosine (close to 1) means small angle between the two vectors.
-						 */
-						double cosine = vx * eye_x + vy * eye_y;
-						if (cosine > cos_threshold) {
-							is_boundary = 1;
-							break;
-						}
-					}
-				}
-			}
-
-			/* Calculate beginning of ceiling and floor. */
-			int ceiling = SCREEN_HEIGHT / 2.0
-				- SCREEN_HEIGHT / distance_to_wall;
-			int floor = SCREEN_HEIGHT - ceiling;
-
-			/* Determine shade. */
-			char *shade;
-			if (distance_to_wall < MAX_DISTANCE / 4.)
-				shade = "\u2588";
-			else if (distance_to_wall < MAX_DISTANCE / 3.)
-				shade = "\u2593";
-			else if (distance_to_wall < MAX_DISTANCE / 2.)
-				shade = "\u2592";
-			else if (distance_to_wall < MAX_DISTANCE)
-				shade = "\u2591";
-			else
-				shade = " ";
-
-			/* Draw the 3D view. */
-			int row;
-			for (row = 0; row < SCREEN_HEIGHT; ++row) {
-				move(row, col);
-				if (row < ceiling) {
-					addch(' ');
-				} else if (row >= ceiling && row <= floor) {	/* drawing the wall */
-					if (is_boundary)
-						addch(' ');
-					else 
-						printw("%s", shade);
-				} else {	/* Shade floor based on distance. */
-					float half_screen_height = SCREEN_HEIGHT / 2.;
-					float dr = 1. - (row - half_screen_height) / half_screen_height; /* distance-ratio */
-
-					char fshade;	/* floor shade */
-					if (dr < 0.15)
-						fshade = '#';
-					else if (dr < 0.3)
-						fshade = 'x';
-					else if (dr < 0.6)
-						fshade = '.';
-					else if (dr < 0.9)
-						fshade = '-';
-					else
-						fshade = ' ';
-
-					addch(fshade);
-				}
-			}
-		}
-
-		/* Draw the stats. */
-		move(0, 0);
-		printw("X:%3.2f, Y:%3.2f, A:%3.2f, FPS:%3.2f ", player_xpos, player_ypos, player_alpha, 1000000000. / elapsed_nsec);
-
-		/* Draw the map. */
-		const int map_offset = 1;
-		int i;
-		for (i = 0; i < MAP_HEIGHT; ++i) {
-			move(map_offset + i, 0);
-			int j;
-			for (j = 0; j < MAP_WIDTH; ++j)
-				addch(map[i * MAP_WIDTH + j]);
-		}
-		/* Add the player. */
-		move(map_offset + player_ypos, player_xpos);
-		addch('P');
-
+		/* Draw. */
+		draw_3d_view(player);
+		draw_stats(player, elapsed_nsec);
+		draw_map(player);
 		refresh();
 	}
 
