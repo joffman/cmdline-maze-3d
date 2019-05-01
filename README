@@ -1,8 +1,7 @@
 The code is based on the following tutorial from javidx9 ("One Lone Coder"):
 https://www.youtube.com/watch?v=xW8skO7MFYw
 
-The code has been adapted to run on Linux and to use the C programming
-language (not C++).
+The code has been adapted to run on Linux and it uses only C99 (not C++).
 To build the program, the library ncurses has to be installed on your system.
 To install ncurses on a Debian based Linux distribution, enter:
 $ sudo apt-get install libncurses5-dev libncursesw5-dev
