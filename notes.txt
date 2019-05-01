@@ -1,5 +1,0 @@
-For controlling the terminal, see chapter 62 in Kerrisk's book about the Linux
-API.
-
-We need noncanonical mode for the terminal input, so that we don't need to
-press enter for the program to receive our input.
