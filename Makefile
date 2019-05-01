@@ -3,7 +3,7 @@
 # variables
 CC = gcc
 CFLAGS = -Wall -std=c99 -c -g
-LDFLAGS = -lncurses -lm
+LDFLAGS = -lncursesw -lm
 
 # target: dependencies
 # 	actions
